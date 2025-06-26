@@ -1,0 +1,7 @@
+Centro,Restricción
+CentroA,Mínimo 2 trabajadores Mañana
+CentroA,Mínimo 2 trabajadores Tarde
+CentroA,Descanso obligatorio los Domingo
+CentroB,Mínimo 1 trabajador Noche
+CentroB,Máximo 5 días
+CentroB,Descanso obligatorio los Sábado

@@ -1,0 +1,10 @@
+// Este archivo es un ejemplo de cómo debe estructurarse el Excel centralizado de restricciones de centros.
+// Debe guardarse como 'RestriccionesCentros.xlsx' en la carpeta backend/config/
+// Cada fila representa un centro y sus restricciones, separadas por punto y coma.
+// Ejemplo de estructura:
+// | Centro      | Restricciones                                                                 |
+// |-------------|-------------------------------------------------------------------------------|
+// | CentroA     | Mínimo 2 trabajadores Mañana; Mínimo 2 trabajadores Tarde; Descanso obligatorio los Domingo |
+// | CentroB     | Mínimo 1 trabajador Noche; Máximo 5 días; Descanso obligatorio los Sábado     |
+// ...
+// Puede agregar más columnas si lo desea, pero el backend solo usará 'Centro' y 'Restricciones'.

@@ -7,5 +7,7 @@ const centrosRestriccionesController = require("../controller/centrosRestriccion
 router.get("/centros", centrosRestriccionesController.getAllCentros);
 // GET all restricciones
 router.get("/restricciones", centrosRestriccionesController.getAllRestricciones);
+// POST create a new centro
+router.post("/centros", centrosRestriccionesController.createCentro);
 
 module.exports = router;

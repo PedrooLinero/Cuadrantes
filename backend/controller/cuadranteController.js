@@ -2,197 +2,213 @@ const path = require("path");
 const fs = require("fs");
 const XLSX = require("sheetjs-style");
 
-class cuadranteController {
+class CuadranteController {
   static leerExcel(nombreFichero) {
+    const filePath = path.join(__dirname, "../Uploads/", nombreFichero);
+    if (!fs.existsSync(filePath)) throw new Error("Archivo no encontrado.");
+    const workbook = XLSX.readFile(filePath);
+    const sheets = {};
+    workbook.SheetNames.forEach((name) => {
+      sheets[name] = XLSX.utils.sheet_to_json(workbook.Sheets[name], {
+        header: 1,
+      });
+    });
+    return sheets;
+  }
+
+  static async leerRestricciones(req, res) {
     try {
-      const filePath = path.join(__dirname, "../Uploads/", nombreFichero);
-      const workbook = XLSX.readFile(filePath);
-      const sheets = {};
-      for (const sheetName of workbook.SheetNames) {
-        const sheet = workbook.Sheets[sheetName];
-        sheets[sheetName] = XLSX.utils.sheet_to_json(sheet);
+      const file = req.file?.filename;
+      if (!file) return res.status(400).json({ message: "Falta archivo." });
+      const excel = CuadranteController.leerExcel(file);
+
+      const centerName = req.body.centerName;
+      const [hdrRestricciones, ...rowsRestricciones] =
+        excel["Restricciones"] || [];
+      const centrosExcel = [
+        ...new Set(
+          rowsRestricciones.map((r) => r[hdrRestricciones.indexOf("Centro")])
+        ),
+      ];
+
+      if (!centrosExcel.includes(centerName)) {
+        return res.status(400).json({
+          message: `El centro "${centerName}" no coincide con los centros en el Excel: ${centrosExcel.join(", ")}.`,
+        });
       }
-      return sheets;
+
+      // Diccionario de restricciones (opcional)
+      const [hdrDiccionario, ...rowsDiccionario] =
+        excel["Diccionario_Restricciones"] || [];
+      const diccionario = Object.fromEntries(
+        rowsDiccionario.map((r) => [r[0], r[1]])
+      );
+
+      // Parsear trabajadores y restricciones (solo válidos)
+      const trabajadores = rowsRestricciones
+        .map((r) => {
+          const obj = {};
+          hdrRestricciones.forEach((h, i) => (obj[h] = r[i]));
+          obj.restricciones = {};
+          hdrRestricciones.forEach((h, i) => {
+            if (h !== "ID_SAP" && h !== "Nombre" && h !== "Centro") {
+              obj.restricciones[h] = r[i] === "Sí" ? "Sí" : "No";
+            }
+          });
+          obj.disponible = new Array(7).fill(true);
+          return obj;
+        })
+        .filter((t) => t.Nombre && t.ID_SAP); // Solo trabajadores válidos
+
+      // Leer restricciones del centro
+      let restriccionesCentro = [];
+      if (req.body.centerConstraints) {
+        try {
+          restriccionesCentro = JSON.parse(req.body.centerConstraints);
+          if (!Array.isArray(restriccionesCentro)) {
+            throw new Error(
+              "Las restricciones del centro no son un array válido."
+            );
+          }
+        } catch (e) {
+          return res
+            .status(400)
+            .json({ message: "Formato inválido de restricciones del centro." });
+        }
+      } else {
+        return res
+          .status(400)
+          .json({ message: "Faltan las restricciones del centro." });
+      }
+
+      // Devolver solo la información leída
+      console.log("Trabajadores desde Excel:", trabajadores);
+      console.log("Restricciones del centro:", restriccionesCentro);
+      console.log("Diccionario de restricciones:", diccionario);
+
+      // Mostrar cuadrante generado en consola
+      const cuadrante = CuadranteController.generarCuadranteSemanal(trabajadores, restriccionesCentro);
+      console.log("Cuadrante generado:", JSON.stringify(cuadrante, null, 2));
+
+      return res.json({
+        trabajadores,
+        restriccionesCentro,
+        diccionario
+      });
     } catch (error) {
-      console.error("Error al leer el archivo Excel:", error);
-      throw new Error("Error al leer el archivo Excel.");
+      return res.status(500).json({
+        message: "Error al leer restricciones",
+        error: error.message,
+      });
     }
   }
 
-  static async generarCuadrante(req, res) {
-    try {
-      const cuadranteFile = req.file ? req.file.filename : null;
-      if (!cuadranteFile) {
-        return res.status(400).json({ message: "Se debe subir un archivo de cuadrante." });
+  // Generar cuadrante semanal mejorado
+  static generarCuadranteSemanal(trabajadores, restriccionesCentro) {
+    const dias = [
+      "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"
+    ];
+    const turnos = ["Mañana", "Tarde", "Noche"];
+    const cuadrante = {};
+    // Control de asignaciones por trabajador (para NO_EXTRA y horas)
+    const asignacionesPorTrabajador = {};
+    trabajadores.forEach(t => asignacionesPorTrabajador[t.Nombre] = Array(dias.length).fill(null));
+
+    // Procesar restricciones del centro
+    let maxHorasPorDia = 8;
+    let maxHorasExtraSemana = 0;
+    restriccionesCentro.forEach(r => {
+      if (/máximo\s*(\d+)\s*horas por día/i.test(r)) {
+        maxHorasPorDia = parseInt(r.match(/máximo\s*(\d+)\s*horas por día/i)[1]);
       }
-
-      const excelData = cuadranteController.leerExcel(cuadranteFile);
-      const trabajadores = excelData["Trabajadores"] || [];
-      const restricciones = excelData["Restricciones"] || [];
-      const turnos = excelData["Turnos"] || [];
-
-      if (!trabajadores.length || !restricciones.length || !turnos.length) {
-        return res.status(400).json({ message: "El archivo Excel no contiene las hojas o datos requeridas." });
+      if (/máximo\s*(\d+)\s*horas extras?/i.test(r)) {
+        maxHorasExtraSemana = parseInt(r.match(/máximo\s*(\d+)\s*horas extras?/i)[1]);
       }
+    });
 
-      // Obtener restricciones del centro desde el frontend
-      const centerConstraints = req.body.centerConstraints ? JSON.parse(req.body.centerConstraints) : [];
+    // Detectar si hay restricción de descanso en domingo
+    const descansoDomingo = restriccionesCentro.some(r => /descanso.*domingo/i.test(r));
 
-      console.log("Trabajadores:", JSON.stringify(trabajadores, null, 2));
-      console.log("Restricciones:", JSON.stringify(restricciones, null, 2));
-      console.log("Turnos:", JSON.stringify(turnos, null, 2));
-      console.log("Restricciones del Centro:", centerConstraints);
-
-      const dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
-      const cuadrante = [];
-      const diasTrabajador = new Map();
-      const horasPorDia = {};
-      trabajadores.forEach(t => diasTrabajador.set(t.ID, []));
-
-      const restriccionesMap = new Map();
-      restricciones.forEach(r => {
-        if (!restriccionesMap.has(r.ID_Trabajador)) {
-          restriccionesMap.set(r.ID_Trabajador, []);
-        }
-        restriccionesMap.get(r.ID_Trabajador).push(r);
-      });
-
-      function puedeAsignar(trabajador, dia, turno) {
-        console.log(`Verificando si ${trabajador.Nombre} puede trabajar el ${dia} en el turno ${turno}`);
-        const disponibilidad = (trabajador[`Disponible_${dia}`] || "").trim().toLowerCase();
-        if (disponibilidad !== "sí") {
-          console.log(`${trabajador.Nombre} no está disponible el ${dia}`);
-          return false;
-        }
-
-        const restriccionesTrab = restriccionesMap.get(trabajador.ID) || [];
-        const maxDiasConsecutivos = restriccionesTrab.find(r => r.Restricción === "max_dias_consecutivos")?.Valor || 6;
-        const diasAsignados = diasTrabajador.get(trabajador.ID);
-
-        if (diasAsignados.length > 0) {
-          const idxDia = dias.indexOf(dia);
-          const idxUltimo = dias.indexOf(diasAsignados[diasAsignados.length - 1]);
-          if (idxDia - idxUltimo === 1 && diasAsignados.length >= maxDiasConsecutivos) {
-            console.log(`${trabajador.Nombre} excede días consecutivos`);
-            return false;
-          }
-        }
-
-        const key = trabajador.ID + "_" + dia;
-        if (horasPorDia[key] && horasPorDia[key] >= 8) {
-          console.log(`${trabajador.Nombre} excede 8 horas el ${dia}`);
-          return false;
-        }
-
-        if (diasAsignados.length >= 6) {
-          console.log(`${trabajador.Nombre} no puede trabajar 7 días`);
-          return false;
-        }
-
-        for (const r of restriccionesTrab) {
-          if (r.Restricción === "no_turno" && r.Valor === turno) {
-            console.log(`${trabajador.Nombre} no puede trabajar el turno ${turno}`);
-            return false;
-          }
-          if (r.Restricción === "dias_descanso" && r.Valor.split(",").map(d => d.trim().toLowerCase()).includes(dia.toLowerCase())) {
-            console.log(`${trabajador.Nombre} debe descansar el ${dia}`);
-            return false;
-          }
-        }
-
-        // Aplicar restricciones del centro
-        if (centerConstraints.includes('Mínimo 2 trabajadores por turno') && cuadrante.length > 0) {
-          const prevDay = cuadrante[cuadrante.length - 1];
-          if (!prevDay.Mañana || !prevDay.Tarde) {
-            console.log(`Falta un segundo trabajador para ${dia} debido a la restricción del centro`);
-            return false;
-          }
-        }
-        if (centerConstraints.includes('Máximo 8 horas por día') && horasPorDia[key] && horasPorDia[key] >= 8) {
-          console.log(`${trabajador.Nombre} excede 8 horas por día según restricción del centro`);
-          return false;
-        }
-
-        return true;
-      }
-
-      for (const dia of dias) {
-        const asignacionesDia = ["", ""];
-        let intentosManana = 0;
-        let intentosTarde = 0;
-
-        // Asignar turno de mañana
-        while (!asignacionesDia[0] && intentosManana < trabajadores.length) {
-          for (const t of trabajadores) {
-            if (puedeAsignar(t, dia, "mañana") && !asignacionesDia.includes(t.Nombre)) {
-              asignacionesDia[0] = t.Nombre;
-              diasTrabajador.get(t.ID).push(dia);
-              horasPorDia[t.ID + "_" + dia] = (horasPorDia[t.ID + "_" + dia] || 0) + 6;
-              console.log(`Asignado ${t.Nombre} a ${dia} mañana`);
-              break;
-            }
-          }
-          intentosManana++;
-        }
-
-        // Asignar turno de tarde (diferente trabajador)
-        while (!asignacionesDia[1] && intentosTarde < trabajadores.length) {
-          for (const t of trabajadores) {
-            if (puedeAsignar(t, dia, "tarde") && t.Nombre !== asignacionesDia[0] && !asignacionesDia.includes(t.Nombre)) {
-              asignacionesDia[1] = t.Nombre;
-              diasTrabajador.get(t.ID).push(dia);
-              horasPorDia[t.ID + "_" + dia] = (horasPorDia[t.ID + "_" + dia] || 0) + 6;
-              console.log(`Asignado ${t.Nombre} a ${dia} tarde`);
-              break;
-            }
-          }
-          intentosTarde++;
-        }
-
-        cuadrante.push({ Día: dia, Mañana: asignacionesDia[0] || "Sin asignar", Tarde: asignacionesDia[1] || "Sin asignar" });
-      }
-
-      const cuadranteTabla = [];
-      const cabecera = ["Turno/Hora"];
-      dias.forEach(dia => cabecera.push(dia));
-      cuadranteTabla.push(cabecera);
-
-      const horaManana = turnos.find(t => t.Turno?.toLowerCase() === "mañana")?.Hora || "";
-      const horaTarde = turnos.find(t => t.Turno?.toLowerCase() === "tarde")?.Hora || "";
-      const filaManana = [`Mañana${horaManana ? " (" + horaManana + ")" : ""}`];
-      const filaTarde = [`Tarde${horaTarde ? " (" + horaTarde + ")" : ""}`];
-      cuadrante.forEach(asignacion => {
-        filaManana.push(asignacion.Mañana);
-        filaTarde.push(asignacion.Tarde);
-      });
-      cuadranteTabla.push(filaManana);
-      cuadranteTabla.push(filaTarde);
-
-      const worksheet = XLSX.utils.aoa_to_sheet(cuadranteTabla);
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, "Cuadrante");
-
-      const range = XLSX.utils.decode_range(worksheet["!ref"]);
-      for (let R = range.s.r; R <= range.e.r; ++R) {
-        for (let C = range.s.c; C <= range.e.c; ++C) {
-          const cellAddress = XLSX.utils.encode_cell({ r: R, c: C });
-          if (!worksheet[cellAddress]) continue;
-          worksheet[cellAddress].s = {
-            alignment: { horizontal: "center", vertical: "center" },
-            border: { top: { style: "thin" }, bottom: { style: "thin" }, left: { style: "thin" }, right: { style: "thin" } },
-          };
-        }
-      }
-
-      const excelBuffer = XLSX.write(workbook, { bookType: "xlsx", type: "buffer" });
-      res.setHeader("Content-Disposition", "attachment; filename=cuadrante_resultado.xlsx");
-      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-      return res.send(excelBuffer);
-    } catch (error) {
-      console.error("Error al procesar el archivo:", error);
-      res.status(500).json({ message: "Error al generar el cuadrante." });
+    // Detectar si hay restricción de mínimo 2 trabajadores por turno
+    let minTrabajadoresPorTurno = 1;
+    const matchMinTrab = restriccionesCentro.find(r => /mínimo\s*(\d+)\s*trabajadores? por turno/i.test(r));
+    if (matchMinTrab) {
+      minTrabajadoresPorTurno = parseInt(matchMinTrab.match(/mínimo\s*(\d+)\s*trabajadores? por turno/i)[1]);
     }
+
+    // Control de horas semanales para MAX40H
+    const horasSemanalesPorTrabajador = {};
+    trabajadores.forEach(t => {
+      horasSemanalesPorTrabajador[t.Nombre] = 0;
+    });
+
+    dias.forEach((dia, dIdx) => {
+      cuadrante[dia] = {};
+      // Si es domingo y hay restricción, dejar todos los turnos vacíos
+      if (descansoDomingo && dia === "Domingo") {
+        turnos.forEach(turno => {
+          cuadrante[dia][turno] = [];
+        });
+        return; // Saltar a siguiente día
+      }
+      turnos.forEach((turno) => {
+        // Filtrar trabajadores disponibles y compatibles
+        let disponibles = trabajadores.filter((t) => {
+          // SOLO_TURNO
+          if (t.restricciones["SOLO_MAÑANA"] === "Sí" && turno !== "Mañana") return false;
+          if (t.restricciones["SOLO_TARDE"] === "Sí" && turno !== "Tarde") return false;
+          if (t.restricciones["SOLO_NOCHE"] === "Sí" && turno !== "Noche") return false;
+          // NO_SAB_DOM
+          if (t.restricciones["NO_SAB_DOM"] === "Sí" && (dia === "Sábado" || dia === "Domingo")) return false;
+          // NO_EXTRA: solo un turno por día
+          if (t.restricciones["NO_EXTRA"] === "Sí" && asignacionesPorTrabajador[t.Nombre][dIdx] !== null) return false;
+          // MAX40H: no superar 40h semanales (5 turnos)
+          if (t.restricciones["MAX40H"] === "Sí" && horasSemanalesPorTrabajador[t.Nombre] >= 40) return false;
+          // Disponibilidad
+          if (Array.isArray(t.disponible) && t.disponible[dIdx] === false) return false;
+          // Control de horas diarias (asumimos 8h por turno)
+          let horasHoy = 0;
+          for (let tIdx = 0; tIdx < turnos.length; tIdx++) {
+            if (asignacionesPorTrabajador[t.Nombre][dIdx] === turnos[tIdx]) horasHoy += 8;
+          }
+          if (horasHoy + 8 > maxHorasPorDia) return false;
+          return true;
+        });
+        // Asignar el mínimo de trabajadores por turno si la restricción lo indica
+        if (disponibles.length >= minTrabajadoresPorTurno) {
+          // Ordenar por los que menos turnos llevan en la semana
+          disponibles.sort((a, b) => {
+            const aCount = asignacionesPorTrabajador[a.Nombre].filter(x => x !== null).length;
+            const bCount = asignacionesPorTrabajador[b.Nombre].filter(x => x !== null).length;
+            return aCount - bCount;
+          });
+          // Seleccionar los N primeros según el mínimo requerido
+          const elegidos = disponibles.slice(0, minTrabajadoresPorTurno);
+          cuadrante[dia][turno] = elegidos.map(e => e.Nombre);
+          elegidos.forEach(elegido => {
+            asignacionesPorTrabajador[elegido.Nombre][dIdx] = turno;
+            if (elegido.restricciones["MAX40H"] === "Sí") {
+              horasSemanalesPorTrabajador[elegido.Nombre] += 8;
+            }
+          });
+        } else if (disponibles.length > 0) {
+          // Si no hay suficientes, asignar los que haya
+          cuadrante[dia][turno] = disponibles.map(e => e.Nombre);
+          disponibles.forEach(elegido => {
+            asignacionesPorTrabajador[elegido.Nombre][dIdx] = turno;
+            if (elegido.restricciones["MAX40H"] === "Sí") {
+              horasSemanalesPorTrabajador[elegido.Nombre] += 8;
+            }
+          });
+        } else {
+          cuadrante[dia][turno] = [];
+        }
+      });
+    });
+    // (Opcional) Aquí puedes añadir control de horas extra semanales
+    return cuadrante;
   }
 }
 
-module.exports = cuadranteController;
+// Exportar la clase completa para usar métodos estáticos en las rutas
+module.exports = CuadranteController;

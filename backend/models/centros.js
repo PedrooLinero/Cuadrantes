@@ -11,14 +11,6 @@ module.exports = function(sequelize, DataTypes) {
       type: DataTypes.STRING(255),
       allowNull: false
     },
-    id_restriccion: {
-      type: DataTypes.INTEGER,
-      allowNull: true, // Puede ser null si no hay restricción asignada
-      references: {
-        model: 'restricciones',
-        key: 'id'
-      }
-    },
     fecha_creacion: {
       type: DataTypes.DATE,
       allowNull: false,
@@ -35,13 +27,6 @@ module.exports = function(sequelize, DataTypes) {
         using: "BTREE",
         fields: [
           { name: "id" }
-        ]
-      },
-      {
-        name: "id_restriccion",
-        using: "BTREE",
-        fields: [
-          { name: "id_restriccion" }
         ]
       }
     ]

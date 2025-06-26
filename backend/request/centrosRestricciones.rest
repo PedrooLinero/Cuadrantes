@@ -3,3 +3,12 @@ GET http://localhost:3000/api/centros
 
 ### obtener todas las restricciones
 GET http://localhost:3000/api/restricciones
+
+### crear un centro
+POST http://localhost:3000/api/centros
+Content-Type: application/json
+
+{
+  "nombre_centro": "NUEVO CENTRO",
+  "id_restriccion": 1
+}
